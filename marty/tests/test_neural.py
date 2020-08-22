@@ -1,5 +1,8 @@
 from marty.actions import Context
-from marty.neural import CNNSeqEncoder, CharacterEncoder, ContextEncoder
+from marty.neural import CNNSeqEncoder, CharacterEncoder
+
+from marty.layers.context import ContextEncoder
+from marty.tokenizer import Tokenizer
 
 
 def test_character_encoder():
@@ -30,20 +33,28 @@ def test_cnn_encoder():
 
 
 def test_context_encoder_empty():
+    max_sent_length = 10
+    mem_slots = 3
+    embedding_dim = 16
+    tok = Tokenizer({"hello", "world", "COPY"}, max_sent_length)
 
-    ctxe = ContextEncoder(memory_slots=3)
+    ctxe = ContextEncoder(tok, embedding_dim=embedding_dim, mem_slots=3, max_mem_size=3)
 
     ctx = Context(buffer=["hello", "world"])
 
     res = ctxe(ctx)
-    assert res.shape == (3, 8)
+    assert res.shape == (max_sent_length + mem_slots, embedding_dim)
 
 
 def test_context_encoder():
+    max_sent_length = 10
+    mem_slots = 3
+    embedding_dim = 16
+    tok = Tokenizer({"hello", "world", "COPY"}, max_sent_length)
 
-    ctxe = ContextEncoder(memory_slots=3)
+    ctxe = ContextEncoder(tok, embedding_dim=embedding_dim, mem_slots=3, max_mem_size=3)
 
     ctx = Context(buffer=["hello", "world"], memory={0: ("COPY", (0,), (1,))})
 
     res = ctxe(ctx)
-    assert res.shape == (3, 8)
+    assert res.shape == (max_sent_length + mem_slots, embedding_dim)

@@ -72,53 +72,6 @@ class CNNSeqEncoder(Module):
         return torch.mean(x, axis=2)
 
 
-class ContextTensors(NamedTuple):
-    buffer: torch.Tensor  # buffer_size x hidden_size
-    memory: torch.Tensor  # memory_size x hidden_size
-
-
-class ContextEncoder(Module):
-    def __init__(self, memory_slots: int, encoding_size: int, hidden_size: int):
-        super().__init__()
-        self._memory_slots = memory_slots
-        self._out_size = hidden_size
-        self.word_enc = nn.Sequential(
-            CharacterEncoder(pad=10, encoding_size=encoding_size),
-            CNNSeqEncoder(inp_channels=encoding_size, inner_size=self._out_size),
-        )
-
-        self.vec_comb = nn.Linear(self._out_size, self._out_size)
-        # self.empty_buf = Variable(torch.randn(self._out_size))
-        self.empty_mem = Variable(torch.randn(self._out_size))
-
-    def forward(self, ctx: Context):
-
-        buffer_vec = self.word_enc(ctx.buffer)
-
-        memory_slots = []
-        for memory_loc in range(self._memory_slots):
-            if memory_loc not in ctx.memory:
-                memory_slots.append(self.empty_mem)
-            else:
-                memory_slots.append(
-                    self._encode_mem(ctx.memory[memory_loc], buffer_vec)
-                )
-
-        return ContextTensors(buffer_vec, torch.stack(memory_slots))
-
-    def _encode_mem(self, memory_cell, buffer_vec):
-        if isinstance(memory_cell, str):
-            return self.word_enc([memory_cell])[0]
-        elif isinstance(memory_cell, int):
-            return buffer_vec[memory_cell, :]
-        else:
-            # Man, for now let's just merge everything
-
-            return self.vec_comb(
-                torch.stack([self._encode_mem(x, buffer_vec) for x in memory_cell])
-            ).sum(axis=0)
-
-
 class Flatten(nn.Module):
     def forward(self, inp):
         return inp.view(-1)

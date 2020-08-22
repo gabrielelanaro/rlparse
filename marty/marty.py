@@ -8,6 +8,7 @@
 from dataclasses import dataclass
 from functools import partial
 from copy import deepcopy
+from marty.diagnostics import display_action_scores
 import random
 from marty.types import ActionTrace, ParseOutcome
 from marty.engine import ACEngine
@@ -85,25 +86,21 @@ class Marty:
         else:
             selected = scores.argmax()
 
-            # selected = random.randint(0, len(scores) - 1)
+        # selected = random.randint(0, len(scores) - 1)
         selected_action = self._avail_actions[selected]
         torch.set_printoptions(8, sci_mode=False)
         action_names = [
             str((a.name, [p.value for p in a.params])) for a in self._avail_actions
         ]
 
+        display_action_scores(self._avail_actions, scores, c)
         # print("scores")
         # [print(f"{s.item():.8f}", a) for a, s in zip(action_names, scores)]
 
         # print("selected", selected_action, "with proba", scores[selected])
 
-        # print(
-        #     "Selected action",
-        #     selected_action.name,
-        #     selected_action.slots,
-        #     "score",
-        #     max_value,
-        # )
+        # print(f"Selected action: {selected}:{scores[selected]:.6f}", selected_action)
+
         return selected_action, selected
 
     def _compute_avail_actions(self) -> List[Action]:

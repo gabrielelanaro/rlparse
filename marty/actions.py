@@ -54,6 +54,8 @@ def push(context: Context, buffer_loc: int, loc: int):
     mem: Tuple[Any, ...]
     if not loc in context.memory:
         mem = (buffer_loc,)
+    elif len(context.memory[loc]) >= 3:
+        raise InvalidAction(f"push:{buffer_loc}:{loc}")
     else:
         mem = context.memory[loc] + (buffer_loc,)
     new_mem = context.memory.copy()
