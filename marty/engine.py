@@ -11,14 +11,20 @@ from torch import nn
 import torch.nn.functional as F
 from .curiosity import ForwardDynamics, InverseDynamics, IntrinsicCuriosity
 from marty.layers.context import ContextEncoder
-from marty.diagnostics import get_global_step, increase_global_step, writer
+from marty.diagnostics import (
+    display_state,
+    get_global_step,
+    increase_global_step,
+    writer,
+)
+from torch.nn.utils import clip_grad_value_
 
 step = 0
 
 
 class ACEngine:
 
-    entropy_beta = 0.1
+    entropy_beta = 1.0
     clip_grad = 100.0
     bellman_updates = 1
 
@@ -61,17 +67,20 @@ class ACEngine:
 
         self._opt_ctx = Adam(list(self._ctx_encoder.parameters()))
 
-        self._opt_value = Adam(list(self._value_head.parameters()))
-
-        self._opt_actor = Adam(list(self._policy_net.parameters()))
+        self._opt_value = Adam(
+            list(self._value_head.parameters()) + list(self._curiosity.fwd.parameters())
+        )
+        self._opt_actor = Adam(
+            list(self._policy_net.parameters()) + list(self._curiosity.inv.parameters())
+        )
 
     def learn(self, actions: List[ActionTrace], outc: ParseOutcome):
 
         episode_r = {
             ParseOutcome.CORRECT: 100.0,
             ParseOutcome.INCORRECT: 1.00,
-            ParseOutcome.ERROR: -1.0,
-            ParseOutcome.EXCEEDED: -1.0,
+            ParseOutcome.ERROR: -10.0,
+            ParseOutcome.EXCEEDED: -10.0,
         }.get(outc, 0.0)
         writer.add_scalar("reward", episode_r, get_global_step())
         increase_global_step()
@@ -80,7 +89,7 @@ class ACEngine:
         bellman_updates = 1
         print_stuff = False
         if outc == ParseOutcome.INCORRECT:
-            bellman_updates = 1
+            bellman_updates = 10
             print_stuff = False
         if outc == ParseOutcome.CORRECT:
             bellman_updates = 10
@@ -95,85 +104,72 @@ class ACEngine:
             R = episode_r
             # For the final state we use a constant
             next_state = torch.zeros(self._state_size)
-
+            entropy = []
             for trace in actions[::-1]:
                 # Should I take the origin one or the next one?
                 ctx_tensor = self._ctx_encoder(trace.ctx)
-                log_p = self._policy_net(ctx_tensor, self._avail_actions)
-                value = self._value_head(ctx_tensor[0])
                 state_rep = ctx_tensor[0]
 
+                # We don't optimize the policy
+                log_p = self._policy_net(state_rep, self._avail_actions)
+                value = self._value_head(state_rep)
+                display_state(state_rep, trace.ctx)
                 p = torch.exp(log_p)
 
-                # curiosity_fwd = self._curiosity.fwd_loss(
-                #     state_rep, next_state, p.detach()
-                # )
-                # curiosity_inv = self._curiosity.inv_loss(
-                #     state_rep, next_state, p.detach()
-                # )
+                curiosity_fwd = self._curiosity.fwd_loss(
+                    state_rep.detach(), next_state.detach(), p.detach()
+                )
+                curiosity_inv = self._curiosity.inv_loss(
+                    state_rep, next_state, p.detach()
+                )
 
-                # R += curiosity_fwd.detach()
+                R += curiosity_fwd.detach()
                 # Logp and advantage.
                 # note R is the "next" reward (we're looping backwards)
                 # and we add the curiosity reward
-                advantage = episode_r - value
+                advantage = R - value
                 policy_loss = -log_p[trace.action_ix] * advantage.detach()
 
                 #  This is a bit of a problem here because we don't want them to be
                 # exactly like that
-                entropy_loss = self.entropy_beta * (p * log_p).sum()
+                # For entropy I don't want to optimize the state
+                log_p_ent = self._policy_net(
+                    ctx_tensor[0].detach(), self._avail_actions
+                )
+                p = torch.exp(log_p_ent)
+
+                entropy_loss = self.entropy_beta * (p * log_p_ent).sum()
                 value_loss = advantage ** 2
 
-                if print_stuff:
-                    print(
-                        "value",
-                        value.item(),
-                        "R",
-                        float(R),
-                        "context",
-                        trace.ctx,
-                        "action",
-                        trace.action,
-                        "chosen with prob",
-                        log_p[trace.action_ix].exp().item(),
-                        "advantage was",
-                        advantage.item(),
-                        "policy loss was",
-                        policy_loss.item(),
-                        "entropy loss was",
-                        entropy_loss.item(),
-                        # "curiosity loss was",
-                        # curiosity_fwd.item(),
-                        # curiosity_inv.item(),
-                        "p was",
-                        p.detach().numpy(),
-                        "sum was",
-                        torch.exp(log_p).sum().item(),
-                        "len logp",
-                        len(log_p),
-                    )
-                    input()
-
-                total_loss = policy_loss + value_loss + entropy_loss
+                total_loss = (
+                    policy_loss
+                    + value_loss
+                    + entropy_loss
+                    + curiosity_inv
+                    + curiosity_fwd
+                )
                 writer.add_scalar("policy_loss", policy_loss, get_global_step())
                 writer.add_scalar("value_loss", value_loss, get_global_step())
                 writer.add_scalar("entropy_loss", entropy_loss, get_global_step())
                 writer.add_scalar("total_loss", total_loss, get_global_step())
+                writer.add_scalar("curiosity_fwd", curiosity_fwd, get_global_step())
+                writer.add_scalar("curiosity_inv", curiosity_inv, get_global_step())
                 increase_global_step()
                 losses.append(total_loss)
 
                 R = value.detach()
                 next_state = state_rep.detach()
 
+            # clip_grad_value_(self._ctx_encoder.parameters(), clip_value=1.0)
             total_loss = torch.cat(losses).mean()
             total_loss.backward()
             self._opt_ctx.step()
-            self._opt_actor.step()
             self._opt_value.step()
+            self._opt_actor.step()
 
     def policy(self, ctx: Context):
         ctx_t = self._ctx_encoder(ctx)
-        activations = self._policy_net(ctx_t, self._avail_actions)
+        activations = self._policy_net(ctx_t[0], self._avail_actions)
         return activations
 
     def _value(self, ctx: Context):
@@ -192,11 +188,11 @@ class PolicyNetwork(nn.Module):
         super().__init__()
         self.embedding_size = embedding_size
 
-        tf_lay = TransformerEncoderLayer(
-            d_model=embedding_size, nhead=4, dim_feedforward=256
-        )
+        # tf_lay = TransformerEncoderLayer(
+        #     d_model=embedding_size, nhead=4, dim_feedforward=256
+        # )
 
-        self.tf = TransformerEncoder(tf_lay, 3)
+        # self.tf = TransformerEncoder(tf_lay, 3)
 
         # Those are just to convert from the categorical values to integers
         self._action_type_space = {k: i for i, k in enumerate(self.action_types)}
@@ -206,14 +202,18 @@ class PolicyNetwork(nn.Module):
         self._buf_space = list(range(buf_size))
 
         # Those are the various heads for all possible actions and parameters
-        self.decision_layer = nn.Linear(
-            embedding_size,
-            len(self._action_type_space)
-            + len(self._unary_ops_space)
-            + len(self._binary_ops_space)
-            + len(self._buf_space)
-            + len(self._mem_space)
-            + len(self._mem_space),
+        self.decision_layer = nn.Sequential(
+            nn.Linear(embedding_size, 256),
+            nn.LeakyReLU(),
+            nn.Linear(
+                256,
+                len(self._action_type_space)
+                + len(self._unary_ops_space)
+                + len(self._binary_ops_space)
+                + len(self._buf_space)
+                + len(self._mem_space)
+                + len(self._mem_space),
+            ),
         )
 
         # Those are the incides of the heads
@@ -231,11 +231,12 @@ class PolicyNetwork(nn.Module):
         ix = self.buf_head[1]
 
         self.mem1_head = ix, ix + len(self._mem_space)
+        ix = self.mem1_head[1]
+
         self.mem2_head = ix, ix + len(self._mem_space)
 
     def forward(self, context_tensor, avail_actions: List[Action]):
-        attn = self.tf(context_tensor.unsqueeze(1))[0, 0, :]
-        act = self.decision_layer(attn)
+        act = self.decision_layer(context_tensor)
 
         action_log_p = F.log_softmax(act[slice(*self.action_head)])
         unary_op_log_p = F.log_softmax(act[slice(*self.unary_ops_head)])
@@ -252,30 +253,23 @@ class PolicyNetwork(nn.Module):
             total_log_p = action_log_p[self._action_type_space[action.name]]
             # DOn't know but I want to scale logp by the space size
 
-            space_size = 1
-
             mem_param = 0
             for p in action.params:
                 if p.slot == ActionParamSlot.BINARY_OP:
                     total_log_p = (
                         total_log_p + binary_op_log_p[self._binary_ops_space[p.value]]
                     )
-                    space_size *= len(self._binary_ops_space)
                 elif p.slot == ActionParamSlot.UNARY_OP:
                     total_log_p = (
                         total_log_p + unary_op_log_p[self._unary_ops_space[p.value]]
                     )
-                    space_size *= len(self._unary_ops_space)
 
                 elif p.slot == ActionParamSlot.BUF:
                     total_log_p = total_log_p + buf_log_p[self._buf_space[p.value]]
-                    space_size *= len(self._buf_space)
                 elif p.slot == ActionParamSlot.MEM and mem_param == 0:
                     total_log_p = total_log_p + mem1_log_p[self._mem_space[p.value]]
-                    space_size *= len(self._mem_space)
                 elif p.slot == ActionParamSlot.MEM and mem_param == 1:
                     total_log_p = total_log_p + mem2_log_p[self._mem_space[p.value]]
-                    space_size *= len(self._mem_space)
 
             activations.append(total_log_p)
 

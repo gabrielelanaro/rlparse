@@ -43,10 +43,10 @@ class IntrinsicCuriosity:
         self.inv = inverse_dynamics
         self.fwd = forward_dynamics
 
-    def fwd_loss(self, state, next_state, action):
+    def inv_loss(self, state, next_state, action):
         pred_action = self.inv(state, next_state)
         return F.binary_cross_entropy_with_logits(pred_action, action)
 
-    def inv_loss(self, state, next_state, action):
+    def fwd_loss(self, state, next_state, action):
         pred_state = self.fwd(state, action)
         return F.mse_loss(pred_state, next_state)
