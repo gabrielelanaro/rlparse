@@ -4,7 +4,7 @@ from marty.actions import Context
 
 
 DATA = [
-    {"buffer": ["BLANK", "egg"], "expected": ("ING", 1)},
+    {"buffer": ["egg"], "expected": ("ING", 0)},
     {"buffer": ["1", "BLANK"], "expected": ("CARD", 0)},
     {"buffer": ["1", "egg"], "expected": ("QTY", ("CARD", 0), ("ING", 1))},
 ]

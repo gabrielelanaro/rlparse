@@ -11,6 +11,7 @@ class ContextEncoder(nn.Module):
 
     tf_head = 2
     dim_feedfw = 128
+    dropout = 0.0
 
     def __init__(
         self,
@@ -34,17 +35,26 @@ class ContextEncoder(nn.Module):
         )
 
         self.tf_enc = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=self.tf_head, dim_feedforward=self.dim_feedfw
+            d_model=embedding_dim,
+            nhead=self.tf_head,
+            dim_feedforward=self.dim_feedfw,
+            dropout=self.dropout,
         )
 
         self.tf_enc_mem = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=self.tf_head, dim_feedforward=self.dim_feedfw
+            d_model=embedding_dim,
+            nhead=self.tf_head,
+            dim_feedforward=self.dim_feedfw,
+            dropout=self.dropout,
         )
 
         self.tf_comb_buf_mem = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=self.tf_head, dim_feedforward=self.dim_feedfw
+            d_model=embedding_dim,
+            nhead=self.tf_head,
+            dim_feedforward=self.dim_feedfw,
+            dropout=self.dropout,
         )
-        self.pos_enc = PositionalEncoding(embedding_dim, dropout=0.0)
+        self.pos_enc = PositionalEncoding(embedding_dim, dropout=self.dropout)
 
     def forward(self, ctx: Context):
         buf, buf_mask = self._encode_buf(ctx.buffer)
@@ -69,7 +79,8 @@ class ContextEncoder(nn.Module):
         state_mask = torch.cat([buf_mask, torch.tensor(mem_mask)]).unsqueeze(0)
 
         # Combine buffer and memory all in the same transformer.
-        state = self.tf_comb_buf_mem(state)
+        # Also residual connection
+        state = self.tf_comb_buf_mem(state) + state
         return state.squeeze(1)
 
     def _encode_buf(self, buf):
@@ -79,20 +90,22 @@ class ContextEncoder(nn.Module):
         emb = self.emb(enc).unsqueeze(1)
         # Positional encoding
         emb = self.pos_enc(emb)
-        return self.tf_enc(emb, src_key_padding_mask=mask.unsqueeze(0)).squeeze(), mask
+        return (
+            (self.tf_enc(emb, src_key_padding_mask=mask.unsqueeze(0)) + emb).squeeze(),
+            mask,
+        )
 
     def _encode_mem(self, memory_cell, buffer_vec):
-
         if isinstance(memory_cell, str):
             encoded, _ = self._tokenizer.encode_tokens([memory_cell])
             out = self.emb(encoded[:1])
             # Encode only the first token
-            return out
+            return out.detach()
 
         if isinstance(memory_cell, int):
             # We need + 1 because at position 0 we have the CLS token.
             out = buffer_vec[memory_cell + 1, :].unsqueeze(0)
-            return out
+            return out.detach()
         if isinstance(memory_cell, tuple):
             # We stack everything, we also need to have a max_mem_size
             n_items = min(len(memory_cell), self.max_mem_size)
@@ -110,7 +123,7 @@ class ContextEncoder(nn.Module):
 
             # Adding positional encodings
             res = self.pos_enc(res)
-            res = self.tf_enc_mem(res)
+            res = self.tf_enc_mem(res) + res
 
             # We take only the first element to go ahead
             return res[0]

@@ -16,7 +16,13 @@ class ForwardDynamics(nn.Module):
         # state representation
 
         # Simplest way we use a linear model
-        self.fc1 = nn.Linear(state_rep_dim + action_dim, state_rep_dim)
+        self.fc1 = nn.Sequential(
+            nn.Linear(state_rep_dim + action_dim, 256),
+            nn.Tanh(),
+            nn.Linear(256, 256),
+            nn.Tanh(),
+            nn.Linear(256, state_rep_dim),
+        )
 
     def forward(self, state, action):
         input_ = torch.cat([state, action], dim=-1)
@@ -27,7 +33,9 @@ class InverseDynamics(nn.Module):
     def __init__(self, state_rep_dim: int, action_dim: int):
         super().__init__()
         # Given two states, we predict the action that was taken to get there.
-        self.fc1 = nn.Linear(state_rep_dim * 2, action_dim)
+        self.fc1 = nn.Sequential(
+            nn.Linear(state_rep_dim * 2, 256), nn.Tanh(), nn.Linear(256, action_dim)
+        )
 
     def forward(self, state, next_state):
         assert state.shape == next_state.shape, f"{state.shape}, {next_state.shape}"
